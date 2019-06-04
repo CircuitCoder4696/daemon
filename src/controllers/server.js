@@ -33,6 +33,7 @@ const extendify = require('extendify');
 const Ansi = require('ansi-escape-sequences');
 const Request = require('request');
 const Cache = require('memory-cache');
+const Listeners= require('../plugins/listenerarray');
 
 const Log = require('./../helpers/logger');
 const Docker = require('./docker');
@@ -48,9 +49,30 @@ const Errors = require('./../errors/index');
 
 const Config = new ConfigHelper();
 
+Listeners.addListenerType('Create<Server>');
+Listeners.addListenerType('Set(status)');
+Listeners.addListenerType('Status<Server>==START');
+Listeners.addListenerType('Status<Server>==STOP');
+Listeners.addListenerType('Command<Server>');
+Listeners.addListenerType('Kill<Server>');
+Listeners.addListenerType('Restart<Server>');
+Listeners.addListenerType('Status<Server>==CLOSED');
+Listeners.addListenerType('Path<Server>');
+Listeners.addListenerType('DiskUse');
+Listeners.addListenerType('DockerProcess<Server>');
+Listeners.addListenerType('Update<CGroups>');
+Listeners.addListenerType('Rebuild');
+Listeners.addListenerType('Suspend<Server>');
+Listeners.addListenerType('Unsuspend<Server>');
+Listeners.addListenerType('Startup<Block>');
+Listeners.addListenerType('Reinstall<Server>');
+require('../DevTest');
+
 class Server extends EventEmitter {
     constructor(json, next) {
         super();
+
+        Listeners.runListeners('Create<Server>', this, { json:json , next:next });
 
         this.status = Status.OFF;
         this.json = json;
@@ -210,6 +232,8 @@ class Server extends EventEmitter {
     }
 
     setStatus(status) {
+        Listeners.runListeners('Set(status)', this, {status:status});
+
         if (status === this.status) return;
         const inverted = _.invert(Status);
 
@@ -289,6 +313,8 @@ class Server extends EventEmitter {
     }
 
     start(next) {
+        Listeners.runListeners('Status<Server>==START', this, {next:next});
+
         if (this.status !== Status.OFF) {
             return next(new Error('Server is already running.'));
         }
@@ -398,6 +424,7 @@ class Server extends EventEmitter {
      * @return {void|Function}
      */
     stop(next) {
+        Listeners.runListeners('Status<Server>==STOP', this, { next:next })
         if (this.status === Status.OFF) {
             return next();
         }
@@ -446,6 +473,8 @@ class Server extends EventEmitter {
      * @return {Promise<any>}
      */
     command(command) {
+        Listeners.runListeners('Command<Server>', this, { command:command });
+
         // If the server is offline don't attempt to send a command, it won't work...
         if (this.status === Status.OFF) {
             return new Promise(resolve => {
@@ -471,6 +500,8 @@ class Server extends EventEmitter {
     }
 
     kill(next) {
+        Listeners.runListeners('Kill<Server>', this, { next:next });
+
         if (this.status === Status.OFF) {
             return next(new Error('Server is already stopped.'));
         }
@@ -484,6 +515,8 @@ class Server extends EventEmitter {
     }
 
     restart(next) {
+        Listeners.runListeners('Restart<Server>', this, { next:next });
+
         if (this.status !== Status.OFF) {
             this.shouldRestart = true;
             this.stop(next);
@@ -505,6 +538,8 @@ class Server extends EventEmitter {
      * just continue with whatever process got us into this situation.
      */
     streamClosed() {
+        Listeners.runListeners('Status<Server>==CLOSED', this);
+
         if (this.status === Status.OFF || this.status === Status.STOPPING) {
             this.setStatus(Status.OFF);
 
@@ -576,6 +611,8 @@ class Server extends EventEmitter {
     }
 
     path(location) {
+        Listeners.runListeners('Path<Server>', this, { location:location });
+
         const dataPath = Path.join(Config.get('sftp.path', '/srv/daemon-data'), this.json.uuid);
 
         if (_.isUndefined(location) || _.replace(location, /\s+/g, '').length < 1) {
@@ -666,6 +703,8 @@ class Server extends EventEmitter {
     }
 
     diskUse(self) { // eslint-disable-line
+        Listeners.runListeners('DiskUse', this, { self:self });
+
         self.fs.size((err, size) => {
             if (err) return self.log.warn(err);
 
@@ -687,6 +726,8 @@ class Server extends EventEmitter {
     }
 
     process(self) { // eslint-disable-line
+        Listeners.runListeners('DockerProcess<Server>', this, { self:self });
+
         if (self.status === Status.OFF) return;
 
         // When the server is started a stream of process data is begun
@@ -819,12 +860,15 @@ class Server extends EventEmitter {
     }
 
     updateCGroups(next) {
+        Listeners.runListeners('Update<CGroups>', this, { next:next });
         this.log.debug('Updating some container resource limits prior to rebuild.');
         this.emit('console', `${Ansi.style.yellow}[Pterodactyl Daemon] Your server has had some resource limits modified, you may need to restart to apply them.`);
         this.docker.update(next);
     }
 
     rebuild(next) {
+        Listeners.runListeners('Rebuild', this, { next:next });
+
         // You shouldn't really be able to make it this far without this being set,
         // but for the sake of double checking...
         if (this.buildInProgress !== true) this.buildInProgress = true;
@@ -869,6 +913,7 @@ class Server extends EventEmitter {
     }
 
     suspend(next) {
+        Listeners.runListeners('Suspend<Server>', this, { next:next });
         Async.parallel([
             callback => {
                 this.modifyConfig({ suspended: 1 }, callback);
@@ -888,6 +933,7 @@ class Server extends EventEmitter {
     }
 
     unsuspend(next) {
+        Listeners.runListeners('Unsuspend<Server>', this, { next:next });
         Async.parallel([
             callback => {
                 this.modifyConfig({ suspended: 0 }, callback);
@@ -901,6 +947,7 @@ class Server extends EventEmitter {
     }
 
     blockStartup(shouldBlock, next) {
+        Listeners.runListeners('Startup<Block>', this, { next:next });
         this.blockBooting = (shouldBlock !== false);
         if (this.blockBooting) {
             this.log.warn('Server booting is now BLOCKED.');
@@ -912,6 +959,7 @@ class Server extends EventEmitter {
     }
 
     reinstall(config, next) {
+        Listeners.runListeners('Reinstall<Server>', this, { config:config , next:next });
         Async.series([
             callback => {
                 this.blockStartup(true, callback);
